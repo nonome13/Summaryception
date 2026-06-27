@@ -64,13 +64,17 @@ Write in short phrases, no more than 20; output must be a single line:`,
     disableGhosting: false,  // true = mark as summarized but don't hide messages
 
     stripPatterns: [
-        '<|channel>thought',
-        '<channel|>',
-        '<output>',
-        '</output>',
-        '<thinking>',
-        '</thinking>',
+        '<think>...</think>',
+        '<thinking>...</thinking>',
+        '<reasoning>...</reasoning>',
+        '<thought>...</thought>',
+        '<reflect>...</reflect>',
+        '<inner_monologue>...</inner_monologue>',
+        '<|channel>thought...<channel|>',
+        '!<output>...</output>',
     ],
+
+    stripPatternsVersion: 1,            // 1 = current syntax; 0 = legacy literal-only
 
     debugMode: false,
     traceMode: false,
@@ -243,15 +247,55 @@ function debugVisibleTurns(chat, store) {
 
 function getSettings() {
     const { extensionSettings } = SillyTavern.getContext();
-    if (!extensionSettings[MODULE_NAME]) {
+    const isNewUser = !extensionSettings[MODULE_NAME];
+
+    if (isNewUser) {
         extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
     }
+
+    const s = extensionSettings[MODULE_NAME];
+    const needsMigration = !isNewUser && !Object.hasOwn(s, 'stripPatternsVersion');
+
     for (const key of Object.keys(defaultSettings)) {
-        if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
-            extensionSettings[MODULE_NAME][key] = defaultSettings[key];
+        if (!Object.hasOwn(s, key)) {
+            s[key] = defaultSettings[key];
         }
     }
-    return extensionSettings[MODULE_NAME];
+
+    if (needsMigration) {
+        const oldDefaults = [
+            '<|channel>thought',
+            '<channel|>',
+            '<output>',
+            '</output>',
+            '<thinking>',
+            '</thinking>',
+        ];
+        const current = s.stripPatterns || [];
+        const isOldDefault = current.length === oldDefaults.length &&
+            oldDefaults.every(p => current.includes(p));
+
+        if (isOldDefault) {
+            s.stripPatterns = [
+                '<think>...</think>',
+                '<thinking>...</thinking>',
+                '<reasoning>...</reasoning>',
+                '<thought>...</thought>',
+                '<reflect>...</reflect>',
+                '<inner_monologue>...</inner_monologue>',
+                '<|channel>thought...<channel|>',
+                '!<output>...</output>',
+            ];
+            toastr.info('Strip Patterns updated to new block-removal syntax.', 'Summaryception', { timeOut: 5000 });
+        } else if (current.length > 0) {
+            toastr.info('Strip Patterns syntax has changed. You can now use start...end to remove blocks.', 'Summaryception', { timeOut: 8000 });
+        }
+
+        s.stripPatternsVersion = 1;
+        saveSettings();
+    }
+
+    return s;
 }
 
 function saveSettings() {
@@ -708,39 +752,65 @@ function restorePromptToggles(snapshot) {
 // ─── Output Cleaning ─────────────────────────────────────────────────
 
 /**
- * Strip reasoning tags, thinking blocks, and other model artifacts
- * from the summarizer output. Uses configurable patterns plus
- * regex for common reasoning block formats.
+ * Strip reasoning artifacts and unwanted tags from summarizer output.
+ * Supports three syntaxes in stripPatterns:
+ *   - literal: remove exact string
+ *   - block:  start...end  → remove start, end, and everything between
+ *   - unwrap: !start...end → remove start and end, keep content between
  */
 function cleanSummarizerOutput(raw) {
     let text = raw;
-
     const s = getSettings();
+    const patterns = s.stripPatterns || [];
 
-    // Remove configurable strip patterns
-    for (const pattern of s.stripPatterns) {
-        while (text.includes(pattern)) {
-            text = text.replace(pattern, '');
+    // Escape regex metacharacters so user input is always treated as literal
+    const escapeRe = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    for (const line of patterns) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // Unwrap modifier (!) only applies to ranges; literals keep the ! as-is
+        let isUnwrap = false;
+        let content = trimmed;
+
+        if (trimmed.includes('...') && trimmed.startsWith('!')) {
+            isUnwrap = true;
+            content = trimmed.slice(1);
         }
-    }
 
-    // Remove common reasoning blocks (content between tag pairs)
-    const blockPatterns = [
-        /<\|channel>thought[\s\S]*?<channel\|>/gi,
-        /<thinking>[\s\S]*?<\/thinking>/gi,
-        /<output>([\s\S]*?)<\/output>/gi,
-        /<reasoning>[\s\S]*?<\/reasoning>/gi,
-        /<thought>[\s\S]*?<\/thought>/gi,
-        /<reflect>[\s\S]*?<\/reflect>/gi,
-        /<inner_monologue>[\s\S]*?<\/inner_monologue>/gi,
-    ];
+        // No range operator → literal string removal
+        if (!content.includes('...')) {
+            while (text.includes(content)) {
+                text = text.replace(content, '');
+            }
+            continue;
+        }
 
-    for (const regex of blockPatterns) {
-        // For <output> tags, keep the content inside
-        if (regex.source.includes('output')) {
-            text = text.replace(regex, '$1');
-        } else {
-            text = text.replace(regex, '');
+        // Parse range: split on first occurrence of ...
+        const rangeIdx = content.indexOf('...');
+        const start = content.slice(0, rangeIdx).trim();
+        const end = content.slice(rangeIdx + 3).trim();
+
+        if (!start || !end) {
+            // Invalid range: skip silently (UI validation already warns the user)
+            continue;
+        }
+
+        const startRe = escapeRe(start);
+        const endRe = escapeRe(end);
+
+        try {
+            if (isUnwrap) {
+                const regex = new RegExp(`${startRe}([\\s\\S]*?)${endRe}`, 'gi');
+                text = text.replace(regex, '$1');
+            } else {
+                const regex = new RegExp(`${startRe}[\\s\\S]*?${endRe}`, 'gi');
+                text = text.replace(regex, '');
+            }
+        } catch (e) {
+            // Skip malformed patterns gracefully
+            continue;
         }
     }
 
@@ -1642,6 +1712,65 @@ function registerSlashCommands() {
 
 // ─── Settings UI ─────────────────────────────────────────────────────
 
+/**
+ * Parse strip patterns and return validation status for live UI feedback.
+ * @returns {{ok: boolean, count: number, error: string|null}}
+ */
+function validateStripPatternsUI() {
+    const raw = $('#sc_strip_patterns').val() || '';
+    const lines = raw.split('\n');
+    let count = 0;
+    let error = null;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        count++;
+
+        let content = line;
+        if (line.includes('...') && line.startsWith('!')) {
+            content = line.slice(1);
+        }
+
+        if (content.includes('...')) {
+            const idx = content.indexOf('...');
+            const start = content.slice(0, idx).trim();
+            const end = content.slice(idx + 3).trim();
+            if (!start) {
+                error = `Line ${i + 1}: missing start marker`;
+                break;
+            }
+            if (!end) {
+                error = `Line ${i + 1}: missing end marker`;
+                break;
+            }
+        }
+    }
+
+    return { ok: !error, count, error };
+}
+
+function updateStripPatternsStatus() {
+    const status = validateStripPatternsUI();
+    const container = $('#sc_strip_patterns_status');
+    const icon = $('#sc_strip_patterns_icon');
+    const text = $('#sc_strip_patterns_text');
+
+    if (!container.length) return;
+
+    container.css('display', 'flex');
+    if (status.ok) {
+        container.attr('class', 'sc-strip-status sc-strip-ok');
+        icon.attr('class', 'fa-solid fa-circle-check');
+        text.text(`✓ ${status.count} pattern${status.count !== 1 ? 's' : ''} active`);
+    } else {
+        container.attr('class', 'sc-strip-status sc-strip-warn');
+        icon.attr('class', 'fa-solid fa-triangle-exclamation');
+        text.text(`⚠ ${status.error}`);
+    }
+}
+
 function updateUI() {
     try {
         const s = getSettings();
@@ -1687,6 +1816,7 @@ function updateUI() {
         $('#sc_debug_mode').prop('checked', s.debugMode);
         $('#sc_trace_mode').prop('checked', s.traceMode);
         $('#sc_strip_patterns').val((s.stripPatterns || []).join('\n'));
+        updateStripPatternsStatus();
         $('#sc_summarizer_response_length').val(s.summarizerResponseLength || 0);
 
         let ghostedCount = 0;
@@ -2001,6 +2131,10 @@ function bindUIEvents() {
         const lines = $(this).val().split('\n').map(l => l.trim()).filter(l => l.length > 0);
         getSettings().stripPatterns = lines;
         saveSettings();
+    });
+
+    $(document).on('input', '#sc_strip_patterns', function () {
+        updateStripPatternsStatus();
     });
 
     const sliders = [

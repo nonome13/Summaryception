@@ -470,3 +470,21 @@
     flex-direction: column;
     gap: 6px;
 }
+
+/* ─── Strip Patterns Live Validation ─────────────────────────── */
+
+.sc-strip-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 0.85em;
+}
+
+.sc-strip-status.sc-strip-ok {
+    color: #4caf50;
+}
+
+.sc-strip-status.sc-strip-warn {
+    color: #ff9800;
+}

@@ -399,9 +399,22 @@
                     <div class="sc-row">
                         <label for="sc_strip_patterns">
                             <span>Strip Patterns (one per line)</span>
-                            <small class="sc-hint">Tags and prefixes to remove from summarizer output. Handles reasoning model artifacts.</small>
+                            <small class="sc-hint">
+                                <strong>Three ways to strip:</strong><br>
+                                • <code>text</code> — remove that exact text anywhere it appears<br>
+                                • <code>start...end</code> — remove everything from <code>start</code> to <code>end</code>, including the markers themselves<br>
+                                • <code>!start...end</code> — remove only the markers, keep what's inside<br><br>
+                                <strong>Examples:</strong>
+                                <code>Assistant:</code> (literal) ·
+                                <code>&lt;think&gt;...&lt;/think&gt;</code> (block) ·
+                                <code>!&lt;output&gt;...&lt;/output&gt;</code> (unwrap)
+                            </small>
                         </label>
                         <textarea id="sc_strip_patterns" class="text_pole sc-textarea" rows="4"></textarea>
+                        <div id="sc_strip_patterns_status" class="sc-strip-status" style="display: none;">
+                            <span id="sc_strip_patterns_icon" class="fa-solid fa-circle"></span>
+                            <span id="sc_strip_patterns_text"></span>
+                        </div>
                     </div>
 
                     <hr class="sc-divider" />
