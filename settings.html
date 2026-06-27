@@ -370,6 +370,21 @@
                         <textarea id="sc_summarizer_user_prompt" class="text_pole sc-textarea sc-textarea-tall" rows="10"></textarea>
                     </div>
 
+                    <!-- Summary Delivery Method -->
+                    <div class="sc-row">
+                        <label for="sc_injection_mode">
+                            <span>Summary Delivery Method</span>
+                            <small class="sc-hint">
+                                Automatic: Injects at the top of the prompt (Legacy).<br>
+                                Manual: Use the <code>{{summaryception}}</code> macro in your Prompt Manager or Main Prompt to place summaries manually.
+                            </small>
+                        </label>
+                        <select id="sc_injection_mode" class="text_pole">
+                            <option value="automatic">Automatic (Top of Prompt)</option>
+                            <option value="manual">Manual (Macro)</option>
+                        </select>
+                    </div>
+
                     <div class="sc-row">
                         <label for="sc_injection_template">
                             <span>Injection Wrapper Template</span>

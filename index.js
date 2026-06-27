@@ -30,6 +30,7 @@ const defaultSettings = Object.freeze({
     snippetsPerLayer: 30,
     snippetsPerPromotion: 3,
     maxLayers: 5,
+    injectionMode: 'automatic',
     injectionTemplate: '\n\n<summary>\n{{summary}}\n</summary>\n\n',
 
     summarizerSystemPrompt:
@@ -1484,6 +1485,16 @@ function assembleSummaryBlock() {
     return s.injectionTemplate.replace('{{summary}}', snippets.join(' '));
 }
 
+// ─── Macro Handler for Manual Mode ───────────────────────────────────
+
+function macroHandler() {
+    const s = getSettings();
+    // Return empty if disabled or if user is still in Automatic mode 
+    // to prevent accidental double-injection if they type the macro.
+    if (!s.enabled || s.injectionMode !== 'manual') return '';
+    return assembleSummaryBlock();
+}
+
 // ─── Injection via setExtensionPrompt ────────────────────────────────
 
 let _lastInjected = '';
@@ -1493,6 +1504,17 @@ function updateInjection() {
         const { setExtensionPrompt } = SillyTavern.getContext();
         const s = getSettings();
 
+        // Manual Mode: Clear legacy extension prompt slot, let macro handle delivery
+        if (s.injectionMode === 'manual') {
+            if (_lastInjected !== '') {
+                setExtensionPrompt(MODULE_NAME, '', 0, 0, false, 0);
+                _lastInjected = '';
+                log('Legacy injection cleared. Macro mode active.');
+            }
+            return;
+        }
+
+        // Automatic Mode: Check if extension is disabled
         if (!s.enabled) {
             if (_lastInjected !== '') {
                 setExtensionPrompt(MODULE_NAME, '', 0, 0, false, 0);
@@ -1501,13 +1523,14 @@ function updateInjection() {
             return;
         }
 
+        // Automatic Mode: Assemble block and inject at top of chatlog
         const summaryBlock = assembleSummaryBlock();
         if (summaryBlock === _lastInjected) return;
 
-        setExtensionPrompt(MODULE_NAME, summaryBlock || '', 0, 0, false, 0);
+        // position 1 (IN_CHAT), depth 1000 (forces to top of chat), scan false, role 0 (SYSTEM)
+        setExtensionPrompt(MODULE_NAME, summaryBlock || '', 1, 1000, false, 0);
         _lastInjected = summaryBlock || '';
-
-        log(`Injection updated: ${(summaryBlock || '').length} chars`);
+        log(`Injection updated (Automatic): ${(summaryBlock || '').length} chars`);
     } catch (e) {
         log('updateInjection error:', e);
     }
@@ -1637,6 +1660,7 @@ function updateUI() {
         $('#sc_snippets_per_promotion_val').text(s.snippetsPerPromotion);
         $('#sc_max_layers').val(s.maxLayers);
         $('#sc_max_layers_val').text(s.maxLayers);
+        $('#sc_injection_mode').val(s.injectionMode);
         $('#sc_injection_template').val(s.injectionTemplate);
         $('#sc_summarizer_system_prompt').val(s.summarizerSystemPrompt);
         $('#sc_summarizer_user_prompt').val(s.summarizerUserPrompt);
@@ -2008,6 +2032,13 @@ function bindUIEvents() {
             saveSettings();
         });
     }
+
+    $(document).on('change', '#sc_injection_mode', function () {
+        const s = getSettings();
+        s.injectionMode = $(this).val();
+        saveSettings();
+        updateInjection(); // Immediately clear legacy slot or populate it based on new mode
+    });
 
     $(document).on('change', '#sc_debug_mode', function () {
         getSettings().debugMode = $(this).prop('checked');
@@ -2432,6 +2463,7 @@ function bindUIEvents() {
         s.summarizerUserPrompt = defaultSettings.summarizerUserPrompt;
         s.promptPreset = defaultSettings.promptPreset;
         s.injectionTemplate = defaultSettings.injectionTemplate;
+        s.injectionMode = defaultSettings.injectionMode;
         s.stripPatterns = [...defaultSettings.stripPatterns];
         s.summarizerResponseLength = defaultSettings.summarizerResponseLength;
 
@@ -2733,6 +2765,19 @@ async function fetchProfilesFallback(selectElement, currentValue) {
     bindUIEvents();
     initConnectionUI();
 
+    // Register the macro for Manual mode
+    const ctx = SillyTavern.getContext();
+    if (ctx.registerMacro) {
+        ctx.registerMacro(
+            'summaryception', 
+            macroHandler, 
+            'Assembled Summaryception memory block. Place this in any prompt to inject summaries manually.'
+        );
+        log('{{summaryception}} macro registered.');
+    } else {
+        log('Warning: SillyTavern.getContext().registerMacro not found. Macro mode unavailable.');
+    }
+   
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
